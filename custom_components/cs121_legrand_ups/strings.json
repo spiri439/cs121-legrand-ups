@@ -1,0 +1,34 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Legrand UPS (CS121)",
+        "description": "Connect to the Generex CS121 network adapter over SNMP v2c.",
+        "data": {
+          "host": "Host / IP address",
+          "port": "Port",
+          "community": "SNMP community",
+          "scan_interval": "Scan interval (seconds)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to reach the device over SNMP. Check host, port and community.",
+      "invalid_response": "The device responded but did not return identification data.",
+      "unknown": "Unexpected error. Check the Home Assistant log for details."
+    },
+    "abort": {
+      "already_configured": "This device is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options",
+        "data": {
+          "scan_interval": "Scan interval (seconds)"
+        }
+      }
+    }
+  }
+}
