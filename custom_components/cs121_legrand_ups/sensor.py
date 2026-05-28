@@ -32,19 +32,19 @@ from .const import (
     OID_BATTERY_TEMPERATURE,
     OID_BATTERY_VOLTAGE,
     OID_CHARGE_REMAINING,
-    OID_INPUT_CURRENT,
-    OID_INPUT_FREQUENCY,
-    OID_INPUT_POWER,
-    OID_INPUT_VOLTAGE,
     OID_MINUTES_REMAINING,
-    OID_OUTPUT_CURRENT,
     OID_OUTPUT_FREQUENCY,
-    OID_OUTPUT_LOAD,
-    OID_OUTPUT_POWER,
     OID_OUTPUT_SOURCE,
-    OID_OUTPUT_VOLTAGE,
     OID_SECONDS_ON_BATTERY,
     OUTPUT_SOURCE_MAP,
+    input_current_oid,
+    input_frequency_oid,
+    input_power_oid,
+    input_voltage_oid,
+    output_current_oid,
+    output_load_oid,
+    output_power_oid,
+    output_voltage_oid,
 )
 from .coordinator import CS121Coordinator
 from .entity import CS121Entity
@@ -59,15 +59,17 @@ class CS121SensorEntityDescription(SensorEntityDescription):
     enum_map: dict[int, str] | None = None
 
 
-SENSORS: tuple[CS121SensorEntityDescription, ...] = (
-    # Battery
+# Scalar sensors that exist on every UPS regardless of phase count.
+SCALAR_SENSORS: tuple[CS121SensorEntityDescription, ...] = (
+    # Battery / UPS body
     CS121SensorEntityDescription(
         key="battery_charge", name="Battery charge", oid=OID_CHARGE_REMAINING,
         native_unit_of_measurement=PERCENTAGE,
         device_class=SensorDeviceClass.BATTERY, state_class=SensorStateClass.MEASUREMENT,
     ),
     CS121SensorEntityDescription(
-        key="battery_runtime", name="Battery runtime remaining", oid=OID_MINUTES_REMAINING,
+        # upsEstimatedMinutesRemaining — the device's autonomy estimate.
+        key="battery_runtime", name="Autonomy time", oid=OID_MINUTES_REMAINING,
         native_unit_of_measurement=UnitOfTime.MINUTES,
         device_class=SensorDeviceClass.DURATION, state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:timer-sand",
@@ -90,7 +92,9 @@ SENSORS: tuple[CS121SensorEntityDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     CS121SensorEntityDescription(
-        key="battery_temperature", name="Battery temperature", oid=OID_BATTERY_TEMPERATURE,
+        # upsBatteryTemperature is the only temperature this CS121 firmware exposes;
+        # on Legrand ARCHIMOD it's effectively the UPS internal temp.
+        key="battery_temperature", name="UPS temperature", oid=OID_BATTERY_TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         device_class=SensorDeviceClass.TEMPERATURE, state_class=SensorStateClass.MEASUREMENT,
     ),
@@ -100,57 +104,16 @@ SENSORS: tuple[CS121SensorEntityDescription, ...] = (
         options=list(BATTERY_STATUS_MAP.values()),
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
-    # Input
-    CS121SensorEntityDescription(
-        key="input_voltage", name="Input voltage", oid=OID_INPUT_VOLTAGE,
-        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
-        device_class=SensorDeviceClass.VOLTAGE, state_class=SensorStateClass.MEASUREMENT,
-    ),
-    CS121SensorEntityDescription(
-        key="input_frequency", name="Input frequency", oid=OID_INPUT_FREQUENCY, scale=10,
-        native_unit_of_measurement=UnitOfFrequency.HERTZ,
-        device_class=SensorDeviceClass.FREQUENCY, state_class=SensorStateClass.MEASUREMENT,
-    ),
-    CS121SensorEntityDescription(
-        key="input_current", name="Input current", oid=OID_INPUT_CURRENT, scale=10,
-        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
-        device_class=SensorDeviceClass.CURRENT, state_class=SensorStateClass.MEASUREMENT,
-    ),
-    CS121SensorEntityDescription(
-        key="input_power", name="Input power", oid=OID_INPUT_POWER,
-        native_unit_of_measurement=UnitOfPower.WATT,
-        device_class=SensorDeviceClass.POWER, state_class=SensorStateClass.MEASUREMENT,
-    ),
-    # Output
+    # Output (system-wide)
     CS121SensorEntityDescription(
         key="output_source", name="Output source", oid=OID_OUTPUT_SOURCE,
         device_class=SensorDeviceClass.ENUM, enum_map=OUTPUT_SOURCE_MAP,
         options=list(OUTPUT_SOURCE_MAP.values()),
     ),
     CS121SensorEntityDescription(
-        key="output_voltage", name="Output voltage", oid=OID_OUTPUT_VOLTAGE,
-        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
-        device_class=SensorDeviceClass.VOLTAGE, state_class=SensorStateClass.MEASUREMENT,
-    ),
-    CS121SensorEntityDescription(
         key="output_frequency", name="Output frequency", oid=OID_OUTPUT_FREQUENCY, scale=10,
         native_unit_of_measurement=UnitOfFrequency.HERTZ,
         device_class=SensorDeviceClass.FREQUENCY, state_class=SensorStateClass.MEASUREMENT,
-    ),
-    CS121SensorEntityDescription(
-        key="output_current", name="Output current", oid=OID_OUTPUT_CURRENT, scale=10,
-        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
-        device_class=SensorDeviceClass.CURRENT, state_class=SensorStateClass.MEASUREMENT,
-    ),
-    CS121SensorEntityDescription(
-        key="output_power", name="Output power", oid=OID_OUTPUT_POWER,
-        native_unit_of_measurement=UnitOfPower.WATT,
-        device_class=SensorDeviceClass.POWER, state_class=SensorStateClass.MEASUREMENT,
-    ),
-    CS121SensorEntityDescription(
-        key="output_load", name="Output load", oid=OID_OUTPUT_LOAD,
-        native_unit_of_measurement=PERCENTAGE,
-        state_class=SensorStateClass.MEASUREMENT, icon="mdi:gauge",
     ),
     # Alarms
     CS121SensorEntityDescription(
@@ -161,13 +124,94 @@ SENSORS: tuple[CS121SensorEntityDescription, ...] = (
 )
 
 
+def _suffix(line: int) -> tuple[str, str]:
+    """Return ('', '') for L1 (back-compat with v1.0.0 keys) or ('_lN', ' LN') for L2+."""
+    if line == 1:
+        return "", ""
+    return f"_l{line}", f" L{line}"
+
+
+def _input_phase_descs(line: int) -> list[CS121SensorEntityDescription]:
+    key_s, name_s = _suffix(line)
+    descs = [
+        CS121SensorEntityDescription(
+            key=f"input_voltage{key_s}", name=f"Input voltage{name_s}",
+            oid=input_voltage_oid(line),
+            native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+            device_class=SensorDeviceClass.VOLTAGE, state_class=SensorStateClass.MEASUREMENT,
+        ),
+        CS121SensorEntityDescription(
+            key=f"input_current{key_s}", name=f"Input current{name_s}",
+            oid=input_current_oid(line), scale=10,
+            native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+            device_class=SensorDeviceClass.CURRENT, state_class=SensorStateClass.MEASUREMENT,
+        ),
+        CS121SensorEntityDescription(
+            key=f"input_power{key_s}", name=f"Input power{name_s}",
+            oid=input_power_oid(line),
+            native_unit_of_measurement=UnitOfPower.WATT,
+            device_class=SensorDeviceClass.POWER, state_class=SensorStateClass.MEASUREMENT,
+        ),
+    ]
+    if line == 1:
+        # Treat input frequency as system-wide and only expose it once (L1).
+        descs.append(
+            CS121SensorEntityDescription(
+                key="input_frequency", name="Input frequency",
+                oid=input_frequency_oid(1), scale=10,
+                native_unit_of_measurement=UnitOfFrequency.HERTZ,
+                device_class=SensorDeviceClass.FREQUENCY,
+                state_class=SensorStateClass.MEASUREMENT,
+            )
+        )
+    return descs
+
+
+def _output_phase_descs(line: int) -> list[CS121SensorEntityDescription]:
+    key_s, name_s = _suffix(line)
+    return [
+        CS121SensorEntityDescription(
+            key=f"output_voltage{key_s}", name=f"Output voltage{name_s}",
+            oid=output_voltage_oid(line),
+            native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+            device_class=SensorDeviceClass.VOLTAGE, state_class=SensorStateClass.MEASUREMENT,
+        ),
+        CS121SensorEntityDescription(
+            key=f"output_current{key_s}", name=f"Output current{name_s}",
+            oid=output_current_oid(line), scale=10,
+            native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+            device_class=SensorDeviceClass.CURRENT, state_class=SensorStateClass.MEASUREMENT,
+        ),
+        CS121SensorEntityDescription(
+            key=f"output_power{key_s}", name=f"Output power{name_s}",
+            oid=output_power_oid(line),
+            native_unit_of_measurement=UnitOfPower.WATT,
+            device_class=SensorDeviceClass.POWER, state_class=SensorStateClass.MEASUREMENT,
+        ),
+        CS121SensorEntityDescription(
+            key=f"output_load{key_s}", name=f"Output load{name_s}",
+            oid=output_load_oid(line),
+            native_unit_of_measurement=PERCENTAGE,
+            state_class=SensorStateClass.MEASUREMENT, icon="mdi:gauge",
+        ),
+    ]
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    """Set up CS121 sensors from a config entry."""
+    """Set up CS121 sensors. Per-phase entities are created based on the UPS-MIB
+    line counts the coordinator discovered at first refresh."""
     coordinator: CS121Coordinator = hass.data[DOMAIN][entry.entry_id]
+
+    descriptions: list[CS121SensorEntityDescription] = list(SCALAR_SENSORS)
+    for line in range(1, coordinator.lines_input + 1):
+        descriptions.extend(_input_phase_descs(line))
+    for line in range(1, coordinator.lines_output + 1):
+        descriptions.extend(_output_phase_descs(line))
+
     async_add_entities(
-        CS121Sensor(coordinator, entry.entry_id, description) for description in SENSORS
+        CS121Sensor(coordinator, entry.entry_id, desc) for desc in descriptions
     )
 
 

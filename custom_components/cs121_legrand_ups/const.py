@@ -38,19 +38,24 @@ OID_BATTERY_VOLTAGE        = "1.3.6.1.2.1.33.1.2.5.0"   # 0.1 V DC
 OID_BATTERY_CURRENT        = "1.3.6.1.2.1.33.1.2.6.0"   # 0.1 A DC
 OID_BATTERY_TEMPERATURE    = "1.3.6.1.2.1.33.1.2.7.0"   # °C
 
-# Input table — assume single-phase / line index 1 (standard for most UPS)
-OID_INPUT_FREQUENCY = "1.3.6.1.2.1.33.1.3.3.1.2.1"      # 0.1 Hz
-OID_INPUT_VOLTAGE   = "1.3.6.1.2.1.33.1.3.3.1.3.1"      # V RMS
-OID_INPUT_CURRENT   = "1.3.6.1.2.1.33.1.3.3.1.4.1"      # 0.1 A RMS
-OID_INPUT_POWER     = "1.3.6.1.2.1.33.1.3.3.1.5.1"      # W
+# Line counts (read once to discover topology — single- or three-phase).
+OID_INPUT_NUM_LINES  = "1.3.6.1.2.1.33.1.3.2.0"
+OID_OUTPUT_NUM_LINES = "1.3.6.1.2.1.33.1.4.3.0"
 
-# Output group + table
+# Per-line input table builders. Line index 1 is L1, etc.
+def input_frequency_oid(line: int) -> str: return f"1.3.6.1.2.1.33.1.3.3.1.2.{line}"  # 0.1 Hz
+def input_voltage_oid(line: int)   -> str: return f"1.3.6.1.2.1.33.1.3.3.1.3.{line}"  # V RMS
+def input_current_oid(line: int)   -> str: return f"1.3.6.1.2.1.33.1.3.3.1.4.{line}"  # 0.1 A RMS
+def input_power_oid(line: int)     -> str: return f"1.3.6.1.2.1.33.1.3.3.1.5.{line}"  # W
+
+# Output scalars and per-line table builders.
 OID_OUTPUT_SOURCE    = "1.3.6.1.2.1.33.1.4.1.0"          # 1=other 2=none 3=normal 4=bypass 5=battery 6=booster 7=reducer
-OID_OUTPUT_FREQUENCY = "1.3.6.1.2.1.33.1.4.2.0"          # 0.1 Hz
-OID_OUTPUT_VOLTAGE   = "1.3.6.1.2.1.33.1.4.4.1.2.1"      # V RMS
-OID_OUTPUT_CURRENT   = "1.3.6.1.2.1.33.1.4.4.1.3.1"      # 0.1 A RMS
-OID_OUTPUT_POWER     = "1.3.6.1.2.1.33.1.4.4.1.4.1"      # W
-OID_OUTPUT_LOAD      = "1.3.6.1.2.1.33.1.4.4.1.5.1"      # %
+OID_OUTPUT_FREQUENCY = "1.3.6.1.2.1.33.1.4.2.0"          # 0.1 Hz (system)
+
+def output_voltage_oid(line: int) -> str: return f"1.3.6.1.2.1.33.1.4.4.1.2.{line}"  # V RMS
+def output_current_oid(line: int) -> str: return f"1.3.6.1.2.1.33.1.4.4.1.3.{line}"  # 0.1 A RMS
+def output_power_oid(line: int)   -> str: return f"1.3.6.1.2.1.33.1.4.4.1.4.{line}"  # W
+def output_load_oid(line: int)    -> str: return f"1.3.6.1.2.1.33.1.4.4.1.5.{line}"  # %
 
 # Alarms
 OID_ALARMS_PRESENT = "1.3.6.1.2.1.33.1.6.1.0"            # count
@@ -73,8 +78,9 @@ OUTPUT_SOURCE_MAP = {
     7: "reducer",
 }
 
-# OIDs polled every cycle for sensor/binary-sensor entities.
-POLLED_OIDS = (
+# Scalar OIDs polled every cycle. Per-phase OIDs are appended dynamically by the
+# coordinator after topology detection (upsInputNumLines / upsOutputNumLines).
+SCALAR_POLLED_OIDS = (
     OID_BATTERY_STATUS,
     OID_SECONDS_ON_BATTERY,
     OID_MINUTES_REMAINING,
@@ -82,16 +88,8 @@ POLLED_OIDS = (
     OID_BATTERY_VOLTAGE,
     OID_BATTERY_CURRENT,
     OID_BATTERY_TEMPERATURE,
-    OID_INPUT_FREQUENCY,
-    OID_INPUT_VOLTAGE,
-    OID_INPUT_CURRENT,
-    OID_INPUT_POWER,
     OID_OUTPUT_SOURCE,
     OID_OUTPUT_FREQUENCY,
-    OID_OUTPUT_VOLTAGE,
-    OID_OUTPUT_CURRENT,
-    OID_OUTPUT_POWER,
-    OID_OUTPUT_LOAD,
     OID_ALARMS_PRESENT,
 )
 
