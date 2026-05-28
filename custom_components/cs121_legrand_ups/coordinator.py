@@ -27,12 +27,13 @@ from .const import (
     output_voltage_oid,
 )
 
-# Per-attempt timeouts. puresnmp does its own UDP retries; we then layer an
-# outer retry loop on top to ride out the occasional dropped packet without
-# every entity going 'unavailable' for a full poll interval.
-SNMP_PER_ATTEMPT_TIMEOUT = 2.0   # seconds — puresnmp's per-try timeout
-SNMP_INNER_RETRIES = 1           # puresnmp's own retry count (1 = 2 tries)
-SNMP_OUTER_ATTEMPTS = 3          # additional retry passes around multiget
+# Per-attempt timeouts. puresnmp's installed Client() doesn't accept
+# timeout/retries directly (newer API moved those to the Sender), so we bound
+# each multiget with asyncio.wait_for and layer an outer retry loop on top to
+# ride out the occasional dropped UDP packet without every entity going
+# 'unavailable' for a full poll interval.
+SNMP_PER_ATTEMPT_TIMEOUT = 4.0   # seconds — hard cap per multiget attempt
+SNMP_OUTER_ATTEMPTS = 3          # retry passes around multiget
 SNMP_OUTER_RETRY_DELAY = 0.5     # seconds between outer attempts
 
 _LOGGER = logging.getLogger(__name__)
@@ -67,18 +68,11 @@ class CS121Coordinator(DataUpdateCoordinator[dict]):
         )
         self._host = host
         self._port = port
-        # PyWrapper exposes a friendlier multiget API on top of the raw Client.
-        # Short per-attempt timeout + small internal retry count keeps the worst
-        # case under ~5s before our own outer retry loop kicks in.
-        self._client = PyWrapper(
-            Client(
-                host,
-                V2C(community),
-                port=port,
-                timeout=SNMP_PER_ATTEMPT_TIMEOUT,
-                retries=SNMP_INNER_RETRIES,
-            )
-        )
+        self._community = community
+        # Client construction triggers blocking importlib + os.listdir for
+        # puresnmp's plugin discovery, so we defer it to an executor on first
+        # use rather than building it here on the event loop.
+        self._client: PyWrapper | None = None
         self.ident: dict[str, str | None] = {}
         # Topology — filled in by async_fetch_topology before first poll.
         self.lines_input: int = 1
@@ -87,14 +81,27 @@ class CS121Coordinator(DataUpdateCoordinator[dict]):
         # output) so a single bad OID only kills one chunk, not the whole poll.
         self._polled_oid_groups: tuple[tuple[str, ...], ...] = ()
 
+    def _build_snmp_client(self) -> PyWrapper:
+        """Construct the puresnmp client. Blocking (plugin imports) — call from an executor."""
+        return PyWrapper(Client(self._host, V2C(self._community), port=self._port))
+
+    async def _ensure_client(self) -> None:
+        if self._client is None:
+            self._client = await self.hass.async_add_executor_job(self._build_snmp_client)
+
     async def _multiget(self, oids: tuple[str, ...]) -> dict[str, object | None]:
         """Fetch many OIDs with retries around the multiget so that a single
         dropped UDP packet doesn't flip every entity to 'unavailable' for an
         entire poll cycle."""
+        await self._ensure_client()
+        assert self._client is not None  # for type checkers
         last_err: Exception | None = None
         for attempt in range(1, SNMP_OUTER_ATTEMPTS + 1):
             try:
-                values = await self._client.multiget(list(oids))
+                values = await asyncio.wait_for(
+                    self._client.multiget(list(oids)),
+                    timeout=SNMP_PER_ATTEMPT_TIMEOUT,
+                )
                 if attempt > 1:
                     _LOGGER.debug(
                         "SNMP multiget recovered on attempt %d/%d",
