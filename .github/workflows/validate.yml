@@ -16,9 +16,6 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
-          # No logo bundled yet. Custom integrations can serve brand icons
-          # directly from 2026.3.0; once a logo is added under brand/, drop this.
-          ignore: brands
 
   hassfest:
     name: Hassfest validation
