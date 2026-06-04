@@ -12,13 +12,16 @@ DOMAIN = "cs121_legrand_ups"
 # Config keys
 CONF_COMMUNITY = "community"
 CONF_SCAN_INTERVAL = "scan_interval"
-CONF_PROTOCOL = "protocol"          # "snmp" or "modbus"
+CONF_PROTOCOL = "protocol"          # "snmp", "modbus" or "both"
 CONF_MODBUS_UNIT = "modbus_unit"    # Modbus slave/unit id
+CONF_MODBUS_PORT = "modbus_port"    # Modbus TCP port (used by the 'both' mode,
+                                    # where CONF_PORT is the SNMP port)
 
 # Transport protocols
 PROTOCOL_SNMP = "snmp"
 PROTOCOL_MODBUS = "modbus"
-PROTOCOLS = (PROTOCOL_SNMP, PROTOCOL_MODBUS)
+PROTOCOL_BOTH = "both"              # SNMP telemetry + Modbus alarm flags
+PROTOCOLS = (PROTOCOL_SNMP, PROTOCOL_MODBUS, PROTOCOL_BOTH)
 
 # Defaults
 DEFAULT_NAME = "Legrand UPS"

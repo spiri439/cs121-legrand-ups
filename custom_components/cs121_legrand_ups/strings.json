@@ -26,6 +26,17 @@
           "modbus_unit": "Modbus unit ID",
           "scan_interval": "Scan interval (seconds)"
         }
+      },
+      "both": {
+        "title": "SNMP + Modbus settings",
+        "description": "Telemetry (including input power) is read over SNMP; the UPS alarm flags (Input bad, …) are read over Modbus.",
+        "data": {
+          "port": "SNMP port",
+          "community": "SNMP community",
+          "modbus_port": "Modbus TCP port",
+          "modbus_unit": "Modbus unit ID",
+          "scan_interval": "Scan interval (seconds)"
+        }
       }
     },
     "error": {
@@ -41,7 +52,8 @@
     "protocol": {
       "options": {
         "snmp": "SNMP (port 161)",
-        "modbus": "Modbus TCP (port 502)"
+        "modbus": "Modbus TCP (port 502)",
+        "both": "SNMP + Modbus (telemetry + alarm flags)"
       }
     }
   },

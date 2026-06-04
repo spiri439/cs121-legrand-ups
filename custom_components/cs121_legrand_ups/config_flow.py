@@ -25,6 +25,7 @@ from homeassistant.helpers.selector import (
 
 from .const import (
     CONF_COMMUNITY,
+    CONF_MODBUS_PORT,
     CONF_MODBUS_UNIT,
     CONF_PROTOCOL,
     CONF_SCAN_INTERVAL,
@@ -37,6 +38,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     OID_IDENT_MANUFACTURER,
+    PROTOCOL_BOTH,
     PROTOCOL_MODBUS,
     PROTOCOLS,
     SNMP_TIMEOUT,
@@ -119,8 +121,11 @@ class CS121ConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         if user_input is not None:
             self._base = dict(user_input)
-            if user_input[CONF_PROTOCOL] == PROTOCOL_MODBUS:
+            protocol = user_input[CONF_PROTOCOL]
+            if protocol == PROTOCOL_MODBUS:
                 return await self.async_step_modbus()
+            if protocol == PROTOCOL_BOTH:
+                return await self.async_step_both()
             return await self.async_step_snmp()
 
         schema = vol.Schema(
@@ -192,6 +197,41 @@ class CS121ConfigFlow(ConfigFlow, domain=DOMAIN):
             }
         )
         return self.async_show_form(step_id="modbus", data_schema=schema, errors=errors)
+
+    async def async_step_both(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            data = {**self._base, **user_input}
+            await self.async_set_unique_id(f"{data[CONF_HOST]}:{data[CONF_PORT]}")
+            self._abort_if_unique_id_configured()
+            error = await _test_connection(
+                self.hass, data[CONF_HOST], data[CONF_PORT], data[CONF_COMMUNITY]
+            )
+            if not error:
+                error = await _test_modbus(
+                    data[CONF_HOST], data[CONF_MODBUS_PORT], data[CONF_MODBUS_UNIT]
+                )
+            if error:
+                errors["base"] = error
+            else:
+                return self.async_create_entry(title=DEFAULT_NAME, data=data)
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
+                vol.Required(CONF_COMMUNITY, default=DEFAULT_COMMUNITY): str,
+                vol.Required(CONF_MODBUS_PORT, default=DEFAULT_MODBUS_PORT): int,
+                vol.Required(
+                    CONF_MODBUS_UNIT, default=DEFAULT_MODBUS_UNIT
+                ): vol.All(int, vol.Range(min=0, max=255)),
+                vol.Required(
+                    CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
+                ): vol.All(int, vol.Range(min=5, max=3600)),
+            }
+        )
+        return self.async_show_form(step_id="both", data_schema=schema, errors=errors)
 
     @staticmethod
     @callback

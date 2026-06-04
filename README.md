@@ -28,7 +28,8 @@ not created on the other:
 - **Modbus only:** the per-alarm flags (Input bad, Output overload, …).
 
 So if you need **input power**, use SNMP; if you need the **alarm flags**, use
-Modbus.
+Modbus — or pick **SNMP + Modbus** to get both at once (telemetry over SNMP,
+alarm flags overlaid from Modbus, in a single device).
 
 ## Features
 
@@ -63,10 +64,11 @@ Copy `custom_components/cs121_legrand_ups` into your Home Assistant
 | Field | Default | Notes |
 |-------|---------|-------|
 | Host / IP | — | IP of the CS121 adapter |
-| Protocol | `snmp` | `snmp` or `modbus` |
+| Protocol | `snmp` | `snmp`, `modbus`, or `both` (SNMP + Modbus) |
 | Port | 161 | **161** for SNMP, **502** for Modbus TCP |
-| SNMP community | `public` | SNMP only — set the same value the CS121 uses |
-| Modbus unit ID | 1 | Modbus only — the CS121 answers on unit 1 |
+| SNMP community | `public` | SNMP / both — set the same value the CS121 uses |
+| Modbus TCP port | 502 | `both` mode only (SNMP uses the Port field) |
+| Modbus unit ID | 1 | Modbus / both — the CS121 answers on unit 1 |
 | Scan interval | 30 s | Adjustable later via the integration options |
 
 ## How it reads the device

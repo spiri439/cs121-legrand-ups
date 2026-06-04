@@ -32,6 +32,7 @@ from .const import (
     OID_INPUT_NUM_LINES,
     OID_OUTPUT_NUM_LINES,
     OID_OUTPUT_SOURCE,
+    PROTOCOL_BOTH,
     PROTOCOL_MODBUS,
     SCALAR_POLLED_OIDS,
     WELL_KNOWN_ALARMS,
@@ -96,6 +97,7 @@ class CS121Coordinator(DataUpdateCoordinator[dict]):
         scan_interval: int,
         protocol: str = "snmp",
         modbus_unit: int = 1,
+        modbus_port: int | None = None,
     ) -> None:
         super().__init__(
             hass,
@@ -108,6 +110,9 @@ class CS121Coordinator(DataUpdateCoordinator[dict]):
         self._community = community
         self._protocol = protocol
         self._modbus_unit = modbus_unit
+        # Pure Modbus: the configured _port already is the Modbus port. In
+        # 'both' mode _port is the SNMP port (161) and Modbus uses its own.
+        self._modbus_port = port if protocol == PROTOCOL_MODBUS else (modbus_port or port)
         # Client construction triggers blocking importlib + os.listdir for
         # puresnmp's plugin discovery, so we defer it to an executor on first
         # use rather than building it here on the event loop.
@@ -241,7 +246,34 @@ class CS121Coordinator(DataUpdateCoordinator[dict]):
     async def _async_update_data(self) -> dict:
         if self._protocol == PROTOCOL_MODBUS:
             return await self._async_update_modbus()
-        return await self._async_update_snmp()
+        results = await self._async_update_snmp()
+        if self._protocol == PROTOCOL_BOTH:
+            # SNMP gives the full telemetry; overlay the alarm flags from Modbus
+            # (the only place 'Input bad' etc. are exposed on this firmware).
+            await self._overlay_modbus_alarms(results)
+        return results
+
+    async def _overlay_modbus_alarms(self, results: dict) -> None:
+        """Best-effort: replace the (empty) SNMP alarm data with the Modbus alarm
+        flags. Never raises — a Modbus hiccup must not blank the SNMP poll."""
+        try:
+            regs = await self._read_modbus_block(115, 25)  # 115..139
+            if not regs:
+                return
+            active_oids: list[str] = []
+            labels: list[str] = []
+            for reg, oid in MODBUS_ALARM_REGS.items():
+                if regs.get(reg) == 1:
+                    active_oids.append(oid)
+                    labels.append(WELL_KNOWN_ALARMS.get(oid, oid))
+            for reg, label in MODBUS_ALARM_EXTRA.items():
+                if regs.get(reg) == 1:
+                    labels.append(label)
+            results[KEY_ACTIVE_ALARM_OIDS] = active_oids
+            results[KEY_ACTIVE_ALARM_LABELS] = labels
+            results[OID_ALARMS_PRESENT] = len(labels)
+        except Exception as err:  # noqa: BLE001 — overlay is optional
+            _LOGGER.debug("Modbus alarm overlay failed: %s", err)
 
     async def _async_update_snmp(self) -> dict:
         # Identity and topology fetches are best-effort and only run until they succeed.
@@ -294,7 +326,7 @@ class CS121Coordinator(DataUpdateCoordinator[dict]):
             # Imported lazily so SNMP-only installs never need pymodbus loaded.
             from pymodbus.client import AsyncModbusTcpClient
 
-            self._modbus_client = AsyncModbusTcpClient(self._host, port=self._port)
+            self._modbus_client = AsyncModbusTcpClient(self._host, port=self._modbus_port)
         if not self._modbus_client.connected:
             await self._modbus_client.connect()
         return self._modbus_client
