@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from datetime import timedelta
 
@@ -53,6 +54,23 @@ SNMP_OUTER_ATTEMPTS = 3          # retry passes around multiget
 SNMP_OUTER_RETRY_DELAY = 0.5     # seconds between outer attempts
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def modbus_unit_kwargs(fn, unit: int) -> dict:
+    """Return the unit-id keyword for a pymodbus read call as {name: unit}.
+
+    pymodbus renamed the parameter from ``slave`` to ``device_id`` around 3.9,
+    so we inspect the signature and pick whichever this version accepts rather
+    than hard-coding one (a wrong keyword raises TypeError -> 'unknown' error)."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return {"slave": unit}
+    if "slave" in params:
+        return {"slave": unit}
+    if "device_id" in params:
+        return {"device_id": unit}
+    return {"slave": unit}
 
 
 def _decode(value):
@@ -276,11 +294,12 @@ class CS121Coordinator(DataUpdateCoordinator[dict]):
         Modbus link drops the odd request just like its SNMP agent). Returns a
         {register: value} map, or None if every attempt failed."""
         client = await self._ensure_modbus_client()
+        unit_kw = modbus_unit_kwargs(client.read_input_registers, self._modbus_unit)
         last_err: Exception | None = None
         for attempt in range(1, SNMP_OUTER_ATTEMPTS + 1):
             try:
                 rr = await asyncio.wait_for(
-                    client.read_input_registers(start, count=count, slave=self._modbus_unit),
+                    client.read_input_registers(start, count=count, **unit_kw),
                     timeout=SNMP_PER_ATTEMPT_TIMEOUT,
                 )
                 if not rr.isError():

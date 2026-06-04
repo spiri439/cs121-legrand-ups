@@ -3,22 +3,46 @@
     "step": {
       "user": {
         "title": "Legrand UPS (CS121)",
-        "description": "Connect to the Generex CS121 network adapter over SNMP v2c.",
+        "description": "Connect to the Generex CS121 network adapter. Choose how to talk to it: SNMP (broad telemetry) or Modbus TCP (also exposes the UPS alarm flags such as Input bad).",
         "data": {
           "host": "Host / IP address",
+          "protocol": "Protocol"
+        }
+      },
+      "snmp": {
+        "title": "SNMP settings",
+        "description": "SNMP v2c on UDP port 161 by default.",
+        "data": {
           "port": "Port",
           "community": "SNMP community",
+          "scan_interval": "Scan interval (seconds)"
+        }
+      },
+      "modbus": {
+        "title": "Modbus settings",
+        "description": "Modbus TCP on port 502 by default. The CS121 normally answers on unit ID 1.",
+        "data": {
+          "port": "Port",
+          "modbus_unit": "Modbus unit ID",
           "scan_interval": "Scan interval (seconds)"
         }
       }
     },
     "error": {
-      "cannot_connect": "Failed to reach the device over SNMP. Check host, port and community.",
-      "invalid_response": "The device responded but did not return identification data.",
+      "cannot_connect": "Failed to reach the device. Check the host, port, and (SNMP) community or (Modbus) unit ID.",
+      "invalid_response": "The device responded but did not return the expected data.",
       "unknown": "Unexpected error. Check the Home Assistant log for details."
     },
     "abort": {
       "already_configured": "This device is already configured."
+    }
+  },
+  "selector": {
+    "protocol": {
+      "options": {
+        "snmp": "SNMP (port 161)",
+        "modbus": "Modbus TCP (port 502)"
+      }
     }
   },
   "options": {

@@ -17,6 +17,11 @@ from homeassistant.config_entries import (
 )
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.selector import (
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 
 from .const import (
     CONF_COMMUNITY,
@@ -24,6 +29,7 @@ from .const import (
     CONF_PROTOCOL,
     CONF_SCAN_INTERVAL,
     DEFAULT_COMMUNITY,
+    DEFAULT_MODBUS_PORT,
     DEFAULT_MODBUS_UNIT,
     DEFAULT_NAME,
     DEFAULT_PORT,
@@ -35,6 +41,7 @@ from .const import (
     PROTOCOLS,
     SNMP_TIMEOUT,
 )
+from .coordinator import modbus_unit_kwargs
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -77,8 +84,9 @@ async def _test_modbus(host: str, port: int, unit: int) -> str | None:
         if not client.connected:
             return "cannot_connect"
         try:
+            unit_kw = modbus_unit_kwargs(client.read_input_registers, unit)
             rr = await asyncio.wait_for(
-                client.read_input_registers(103, count=1, slave=unit),
+                client.read_input_registers(103, count=1, **unit_kw),
                 timeout=SNMP_TIMEOUT,
             )
             if rr.isError():
@@ -95,45 +103,86 @@ async def _test_modbus(host: str, port: int, unit: int) -> str | None:
 
 
 class CS121ConfigFlow(ConfigFlow, domain=DOMAIN):
-    """UI configuration flow."""
+    """UI configuration flow.
+
+    Step 1 picks the host + transport from a dropdown; step 2 then shows only
+    the fields that transport needs, pre-filled with its default port (SNMP
+    161 / Modbus TCP 502)."""
 
     VERSION = 1
+
+    def __init__(self) -> None:
+        self._base: dict[str, Any] = {}
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        errors: dict[str, str] = {}
         if user_input is not None:
-            await self.async_set_unique_id(
-                f"{user_input[CONF_HOST]}:{user_input[CONF_PORT]}"
-            )
-            self._abort_if_unique_id_configured()
+            self._base = dict(user_input)
             if user_input[CONF_PROTOCOL] == PROTOCOL_MODBUS:
-                error = await _test_modbus(
-                    user_input[CONF_HOST],
-                    user_input[CONF_PORT],
-                    user_input[CONF_MODBUS_UNIT],
-                )
-            else:
-                error = await _test_connection(
-                    self.hass,
-                    user_input[CONF_HOST],
-                    user_input[CONF_PORT],
-                    user_input[CONF_COMMUNITY],
-                )
-            if error:
-                errors["base"] = error
-            else:
-                return self.async_create_entry(title=DEFAULT_NAME, data=user_input)
+                return await self.async_step_modbus()
+            return await self.async_step_snmp()
 
-        # Use SNMP port 161 / Modbus TCP port 502 in the Port field to match the
-        # chosen protocol. Community applies to SNMP; Unit ID applies to Modbus.
         schema = vol.Schema(
             {
                 vol.Required(CONF_HOST): str,
-                vol.Required(CONF_PROTOCOL, default=DEFAULT_PROTOCOL): vol.In(PROTOCOLS),
+                vol.Required(CONF_PROTOCOL, default=DEFAULT_PROTOCOL): SelectSelector(
+                    SelectSelectorConfig(
+                        options=list(PROTOCOLS),
+                        mode=SelectSelectorMode.DROPDOWN,
+                        translation_key="protocol",
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(step_id="user", data_schema=schema)
+
+    async def async_step_snmp(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            data = {**self._base, **user_input}
+            await self.async_set_unique_id(f"{data[CONF_HOST]}:{data[CONF_PORT]}")
+            self._abort_if_unique_id_configured()
+            error = await _test_connection(
+                self.hass, data[CONF_HOST], data[CONF_PORT], data[CONF_COMMUNITY]
+            )
+            if error:
+                errors["base"] = error
+            else:
+                return self.async_create_entry(title=DEFAULT_NAME, data=data)
+
+        schema = vol.Schema(
+            {
                 vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
                 vol.Required(CONF_COMMUNITY, default=DEFAULT_COMMUNITY): str,
+                vol.Required(
+                    CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
+                ): vol.All(int, vol.Range(min=5, max=3600)),
+            }
+        )
+        return self.async_show_form(step_id="snmp", data_schema=schema, errors=errors)
+
+    async def async_step_modbus(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            data = {**self._base, **user_input}
+            await self.async_set_unique_id(f"{data[CONF_HOST]}:{data[CONF_PORT]}")
+            self._abort_if_unique_id_configured()
+            error = await _test_modbus(
+                data[CONF_HOST], data[CONF_PORT], data[CONF_MODBUS_UNIT]
+            )
+            if error:
+                errors["base"] = error
+            else:
+                return self.async_create_entry(title=DEFAULT_NAME, data=data)
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_PORT, default=DEFAULT_MODBUS_PORT): int,
                 vol.Required(
                     CONF_MODBUS_UNIT, default=DEFAULT_MODBUS_UNIT
                 ): vol.All(int, vol.Range(min=0, max=255)),
@@ -142,7 +191,7 @@ class CS121ConfigFlow(ConfigFlow, domain=DOMAIN):
                 ): vol.All(int, vol.Range(min=5, max=3600)),
             }
         )
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+        return self.async_show_form(step_id="modbus", data_schema=schema, errors=errors)
 
     @staticmethod
     @callback
