@@ -15,6 +15,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .const import (
     DOMAIN,
     IDENT_OIDS,
+    IGNORED_ALARM_OIDS,
     KEY_ACTIVE_ALARM_LABELS,
     KEY_ACTIVE_ALARM_OIDS,
     MODBUS_ALARM_EXTRA,
@@ -258,7 +259,10 @@ class CS121Coordinator(DataUpdateCoordinator[dict]):
         # Best-effort: learn which alarms are active (e.g. 'Input bad'). A failure
         # here must not blank the rest of the poll, so it never adds to `errors`.
         try:
-            alarm_oids = await self._walk_alarm_descrs()
+            alarm_oids = [
+                oid for oid in await self._walk_alarm_descrs()
+                if oid not in IGNORED_ALARM_OIDS
+            ]
             results[KEY_ACTIVE_ALARM_OIDS] = alarm_oids
             results[KEY_ACTIVE_ALARM_LABELS] = [
                 WELL_KNOWN_ALARMS.get(oid, oid) for oid in alarm_oids

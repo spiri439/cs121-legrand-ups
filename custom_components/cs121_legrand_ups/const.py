@@ -83,6 +83,12 @@ OID_ALARM_DESCR_COLUMN = "1.3.6.1.2.1.33.1.6.2.1.2"      # upsAlarmDescr
 
 # upsWellKnownAlarms (1.3.6.1.2.1.33.1.6.3) — the OIDs upsAlarmDescr points at.
 OID_ALARM_INPUT_BAD = "1.3.6.1.2.1.33.1.6.3.6"
+OID_ALARM_BYPASS_BAD = "1.3.6.1.2.1.33.1.6.3.10"
+
+# Alarm OIDs never treated as an active alarm, on any transport. Bypass bad is
+# always set on a UPS run without a bypass feed (de-energised bypass line), so
+# it would otherwise be a permanent false alarm.
+IGNORED_ALARM_OIDS = frozenset({OID_ALARM_BYPASS_BAD})
 
 # Map each well-known-alarm OID to the same human label the CS121 web UI uses.
 WELL_KNOWN_ALARMS = {
@@ -129,7 +135,7 @@ ALARM_BINARY_SENSORS = (
     ("1.3.6.1.2.1.33.1.6.3.7",  "alarm_output_bad",        "Output bad"),
     ("1.3.6.1.2.1.33.1.6.3.8",  "alarm_output_overload",   "Output overload"),
     ("1.3.6.1.2.1.33.1.6.3.9",  "alarm_on_bypass",         "On bypass"),
-    ("1.3.6.1.2.1.33.1.6.3.10", "alarm_bypass_bad",        "Bypass bad"),
+    # Bypass bad (3.6.3.10) intentionally not exposed — see MODBUS_ALARM_REGS.
     ("1.3.6.1.2.1.33.1.6.3.11", "alarm_output_off",        "Output off as requested"),
     ("1.3.6.1.2.1.33.1.6.3.12", "alarm_ups_off",           "UPS off as requested"),
     ("1.3.6.1.2.1.33.1.6.3.13", "alarm_charger_failed",    "Charger failed"),
@@ -252,7 +258,9 @@ MODBUS_ALARM_REGS = {
     121: "1.3.6.1.2.1.33.1.6.3.7",   # Output bad
     122: "1.3.6.1.2.1.33.1.6.3.8",   # Output overload
     123: "1.3.6.1.2.1.33.1.6.3.9",   # On bypass
-    124: "1.3.6.1.2.1.33.1.6.3.10",  # Bypass bad
+    # 124 (Bypass bad) intentionally omitted — on UPS configured without a
+    # bypass feed the bypass line is permanently de-energised, so this flag is
+    # always set and is not a real fault. See also ALARM_BINARY_SENSORS.
     125: "1.3.6.1.2.1.33.1.6.3.11",  # Output off as requested
     126: "1.3.6.1.2.1.33.1.6.3.12",  # UPS off as requested
     127: "1.3.6.1.2.1.33.1.6.3.13",  # Charger failed
