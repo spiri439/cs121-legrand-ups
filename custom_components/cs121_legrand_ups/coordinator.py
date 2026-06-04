@@ -123,6 +123,12 @@ class CS121Coordinator(DataUpdateCoordinator[dict]):
         # output) so a single bad OID only kills one chunk, not the whole poll.
         self._polled_oid_groups: tuple[tuple[str, ...], ...] = ()
 
+    @property
+    def protocol(self) -> str:
+        """Active transport — 'snmp' or 'modbus'. Used by platforms to skip
+        entities the chosen transport can't provide."""
+        return self._protocol
+
     def _build_snmp_client(self) -> PyWrapper:
         """Construct the puresnmp client. Blocking (plugin imports) — call from an executor."""
         return PyWrapper(Client(self._host, V2C(self._community), port=self._port))

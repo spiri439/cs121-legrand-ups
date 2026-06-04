@@ -18,8 +18,17 @@ Pick the transport when you add the integration:
   leave the RFC 1628 SNMP alarm table empty even while the web UI shows an
   alarm; those flags are only exposed over Modbus.
 
-Shared values (battery, voltages, frequency, load, …) are reported identically
-on both transports, so dashboards and automations don't care which you use.
+Shared values (battery, voltages, frequency, output current/load, …) are
+reported identically on both transports, so dashboards and automations don't
+care which you use. A few metrics exist on only one transport and are simply
+not created on the other:
+
+- **SNMP only:** input current/power, output power (W), output frequency,
+  time-on-battery, battery current.
+- **Modbus only:** the per-alarm flags (Input bad, Output overload, …).
+
+So if you need **input power**, use SNMP; if you need the **alarm flags**, use
+Modbus.
 
 ## Features
 

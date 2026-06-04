@@ -246,6 +246,16 @@ MODBUS_TELEMETRY = (
     (114, OID_INPUT_LINE_BADS, 1, False),     # powerfail counter == upsInputLineBads
 )
 
+# OID keys the Modbus transport can actually fill (telemetry above + the enums
+# derived from the status/alarm registers). Sensors keyed off anything NOT in
+# here — input current/power, output power, output frequency, time-on-battery,
+# battery current — have no Modbus register and would read 'unknown', so they
+# are simply not created on the Modbus transport.
+MODBUS_PROVIDED_OIDS = frozenset(
+    {oid for _reg, oid, _mult, _signed in MODBUS_TELEMETRY}
+    | {OID_OUTPUT_SOURCE, OID_BATTERY_STATUS, OID_ALARMS_PRESENT}
+)
+
 # Alarm flag registers (1=active) -> well-known-alarm OID, so the existing
 # alarm binary sensors / active-alarm list light up unchanged. Register 139
 # (manual bypass switch) has no RFC 1628 equivalent and is handled by label.

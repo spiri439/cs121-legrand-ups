@@ -27,9 +27,11 @@ from .const import (
     BATTERY_STATUS_MAP,
     DOMAIN,
     KEY_ACTIVE_ALARM_LABELS,
+    MODBUS_PROVIDED_OIDS,
     OUTPUT_SOURCE_STATUS,
     OID_ALARMS_PRESENT,
     OID_INPUT_LINE_BADS,
+    PROTOCOL_MODBUS,
     OID_BATTERY_CURRENT,
     OID_BATTERY_STATUS,
     OID_BATTERY_TEMPERATURE,
@@ -219,6 +221,12 @@ async def async_setup_entry(
         descriptions.extend(_input_phase_descs(line))
     for line in range(1, coordinator.lines_output + 1):
         descriptions.extend(_output_phase_descs(line))
+
+    # On Modbus, skip metrics with no register (input current/power, output
+    # power, output frequency, time-on-battery, battery current) so they don't
+    # appear as permanently 'unknown' entities.
+    if coordinator.protocol == PROTOCOL_MODBUS:
+        descriptions = [d for d in descriptions if d.oid in MODBUS_PROVIDED_OIDS]
 
     entities: list[CS121Entity] = [
         CS121Sensor(coordinator, entry.entry_id, desc) for desc in descriptions
