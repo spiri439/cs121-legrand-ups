@@ -7,8 +7,12 @@ from homeassistant.core import HomeAssistant
 
 from .const import (
     CONF_COMMUNITY,
+    CONF_MODBUS_UNIT,
+    CONF_PROTOCOL,
     CONF_SCAN_INTERVAL,
     DEFAULT_COMMUNITY,
+    DEFAULT_MODBUS_UNIT,
+    DEFAULT_PROTOCOL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
@@ -28,6 +32,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         port=entry.data[CONF_PORT],
         community=entry.data.get(CONF_COMMUNITY, DEFAULT_COMMUNITY),
         scan_interval=scan_interval,
+        protocol=entry.data.get(CONF_PROTOCOL, DEFAULT_PROTOCOL),
+        modbus_unit=entry.data.get(CONF_MODBUS_UNIT, DEFAULT_MODBUS_UNIT),
     )
     # Fetch device identity first (best-effort), then refresh telemetry.
     await coordinator.async_fetch_ident()

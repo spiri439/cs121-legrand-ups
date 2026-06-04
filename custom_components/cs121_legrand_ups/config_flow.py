@@ -20,13 +20,19 @@ from homeassistant.core import HomeAssistant, callback
 
 from .const import (
     CONF_COMMUNITY,
+    CONF_MODBUS_UNIT,
+    CONF_PROTOCOL,
     CONF_SCAN_INTERVAL,
     DEFAULT_COMMUNITY,
+    DEFAULT_MODBUS_UNIT,
     DEFAULT_NAME,
     DEFAULT_PORT,
+    DEFAULT_PROTOCOL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     OID_IDENT_MANUFACTURER,
+    PROTOCOL_MODBUS,
+    PROTOCOLS,
     SNMP_TIMEOUT,
 )
 
@@ -60,6 +66,34 @@ async def _test_connection(
     return None
 
 
+async def _test_modbus(host: str, port: int, unit: int) -> str | None:
+    """Return None on success, or an error key on failure. Reads the battery
+    charge register (103) to confirm the CS121 answers Modbus on this unit."""
+    try:
+        from pymodbus.client import AsyncModbusTcpClient
+
+        client = AsyncModbusTcpClient(host, port=port)
+        await client.connect()
+        if not client.connected:
+            return "cannot_connect"
+        try:
+            rr = await asyncio.wait_for(
+                client.read_input_registers(103, count=1, slave=unit),
+                timeout=SNMP_TIMEOUT,
+            )
+            if rr.isError():
+                return "invalid_response"
+        finally:
+            client.close()
+    except (asyncio.TimeoutError, OSError) as err:
+        _LOGGER.warning("CS121 Modbus connection test failed: %s", err)
+        return "cannot_connect"
+    except Exception:  # noqa: BLE001 - keep a clean error code rather than 'unknown'
+        _LOGGER.exception("Unexpected error testing CS121 Modbus connection")
+        return "unknown"
+    return None
+
+
 class CS121ConfigFlow(ConfigFlow, domain=DOMAIN):
     """UI configuration flow."""
 
@@ -74,22 +108,35 @@ class CS121ConfigFlow(ConfigFlow, domain=DOMAIN):
                 f"{user_input[CONF_HOST]}:{user_input[CONF_PORT]}"
             )
             self._abort_if_unique_id_configured()
-            error = await _test_connection(
-                self.hass,
-                user_input[CONF_HOST],
-                user_input[CONF_PORT],
-                user_input[CONF_COMMUNITY],
-            )
+            if user_input[CONF_PROTOCOL] == PROTOCOL_MODBUS:
+                error = await _test_modbus(
+                    user_input[CONF_HOST],
+                    user_input[CONF_PORT],
+                    user_input[CONF_MODBUS_UNIT],
+                )
+            else:
+                error = await _test_connection(
+                    self.hass,
+                    user_input[CONF_HOST],
+                    user_input[CONF_PORT],
+                    user_input[CONF_COMMUNITY],
+                )
             if error:
                 errors["base"] = error
             else:
                 return self.async_create_entry(title=DEFAULT_NAME, data=user_input)
 
+        # Use SNMP port 161 / Modbus TCP port 502 in the Port field to match the
+        # chosen protocol. Community applies to SNMP; Unit ID applies to Modbus.
         schema = vol.Schema(
             {
                 vol.Required(CONF_HOST): str,
+                vol.Required(CONF_PROTOCOL, default=DEFAULT_PROTOCOL): vol.In(PROTOCOLS),
                 vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
                 vol.Required(CONF_COMMUNITY, default=DEFAULT_COMMUNITY): str,
+                vol.Required(
+                    CONF_MODBUS_UNIT, default=DEFAULT_MODBUS_UNIT
+                ): vol.All(int, vol.Range(min=0, max=255)),
                 vol.Required(
                     CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
                 ): vol.All(int, vol.Range(min=5, max=3600)),

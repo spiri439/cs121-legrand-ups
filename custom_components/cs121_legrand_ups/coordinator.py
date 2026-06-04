@@ -14,9 +14,25 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .const import (
     DOMAIN,
     IDENT_OIDS,
+    KEY_ACTIVE_ALARM_LABELS,
+    KEY_ACTIVE_ALARM_OIDS,
+    MODBUS_ALARM_EXTRA,
+    MODBUS_ALARM_REGS,
+    MODBUS_REG_BATTERY_LOW,
+    MODBUS_REG_STATUS,
+    MODBUS_STATUS_BACKUP,
+    MODBUS_STATUS_BYPASS,
+    MODBUS_STATUS_OUTPUT_ACT,
+    MODBUS_TELEMETRY,
+    OID_ALARM_DESCR_COLUMN,
+    OID_ALARMS_PRESENT,
+    OID_BATTERY_STATUS,
     OID_INPUT_NUM_LINES,
     OID_OUTPUT_NUM_LINES,
+    OID_OUTPUT_SOURCE,
+    PROTOCOL_MODBUS,
     SCALAR_POLLED_OIDS,
+    WELL_KNOWN_ALARMS,
     input_current_oid,
     input_frequency_oid,
     input_power_oid,
@@ -59,6 +75,8 @@ class CS121Coordinator(DataUpdateCoordinator[dict]):
         port: int,
         community: str,
         scan_interval: int,
+        protocol: str = "snmp",
+        modbus_unit: int = 1,
     ) -> None:
         super().__init__(
             hass,
@@ -69,14 +87,19 @@ class CS121Coordinator(DataUpdateCoordinator[dict]):
         self._host = host
         self._port = port
         self._community = community
+        self._protocol = protocol
+        self._modbus_unit = modbus_unit
         # Client construction triggers blocking importlib + os.listdir for
         # puresnmp's plugin discovery, so we defer it to an executor on first
         # use rather than building it here on the event loop.
         self._client: PyWrapper | None = None
+        self._modbus_client = None  # AsyncModbusTcpClient, built lazily
         self.ident: dict[str, str | None] = {}
-        # Topology — filled in by async_fetch_topology before first poll.
-        self.lines_input: int = 1
-        self.lines_output: int = 1
+        # Topology — filled in by async_fetch_topology before first poll. The
+        # Modbus register map is fixed at three phases (absent phases read 0),
+        # so there's no line-count discovery on that transport.
+        self.lines_input: int = 3 if protocol == PROTOCOL_MODBUS else 1
+        self.lines_output: int = 3 if protocol == PROTOCOL_MODBUS else 1
         # Polled OIDs are kept in chunks (scalar / per-phase input / per-phase
         # output) so a single bad OID only kills one chunk, not the whole poll.
         self._polled_oid_groups: tuple[tuple[str, ...], ...] = ()
@@ -121,9 +144,33 @@ class CS121Coordinator(DataUpdateCoordinator[dict]):
             f"{SNMP_OUTER_ATTEMPTS} attempts: {last_err}"
         )
 
+    async def _walk_alarm_descrs(self) -> list[str]:
+        """Walk the upsAlarmDescr column and return the well-known-alarm OIDs of
+        every currently active alarm (empty list when the table has no rows).
+
+        Best-effort and time-bounded like the multigets — the alarm table row
+        indices are dynamic, so this is the only way to learn *which* alarms
+        (e.g. 'Input bad') are active rather than just how many."""
+        await self._ensure_client()
+        assert self._client is not None  # for type checkers
+
+        async def _collect() -> list[str]:
+            oids: list[str] = []
+            async for var_bind in self._client.walk(OID_ALARM_DESCR_COLUMN):
+                # upsAlarmDescr's value is an OID pointing into upsWellKnownAlarms.
+                oid_str = str(var_bind.value).lstrip(".")
+                if oid_str:
+                    oids.append(oid_str)
+            return oids
+
+        return await asyncio.wait_for(_collect(), timeout=SNMP_PER_ATTEMPT_TIMEOUT)
+
     async def async_fetch_ident(self) -> None:
-        """Read identification strings once (manufacturer, model, …) for device_info."""
-        if self.ident:
+        """Read identification strings once (manufacturer, model, …) for device_info.
+
+        SNMP-only — the Modbus register map carries no identity strings, so the
+        device falls back to the generic name/model in CS121Entity."""
+        if self.ident or self._protocol == PROTOCOL_MODBUS:
             return
         try:
             data = await self._multiget(IDENT_OIDS)
@@ -167,6 +214,11 @@ class CS121Coordinator(DataUpdateCoordinator[dict]):
         return (tuple(scalar), tuple(inputs), tuple(outputs))
 
     async def _async_update_data(self) -> dict:
+        if self._protocol == PROTOCOL_MODBUS:
+            return await self._async_update_modbus()
+        return await self._async_update_snmp()
+
+    async def _async_update_snmp(self) -> dict:
         # Identity and topology fetches are best-effort and only run until they succeed.
         if not self.ident:
             await self.async_fetch_ident()
@@ -185,6 +237,19 @@ class CS121Coordinator(DataUpdateCoordinator[dict]):
             except UpdateFailed as err:
                 errors.append(str(err))
 
+        # Best-effort: learn which alarms are active (e.g. 'Input bad'). A failure
+        # here must not blank the rest of the poll, so it never adds to `errors`.
+        try:
+            alarm_oids = await self._walk_alarm_descrs()
+            results[KEY_ACTIVE_ALARM_OIDS] = alarm_oids
+            results[KEY_ACTIVE_ALARM_LABELS] = [
+                WELL_KNOWN_ALARMS.get(oid, oid) for oid in alarm_oids
+            ]
+        except (SnmpError, asyncio.TimeoutError, OSError) as err:
+            _LOGGER.debug("Alarm table walk to %s:%s failed: %s", self._host, self._port, err)
+        except Exception as err:  # noqa: BLE001 — optional data; never break the poll
+            _LOGGER.debug("Unexpected alarm table walk error: %s", err)
+
         if not results:
             raise UpdateFailed("; ".join(errors) or "no SNMP data")
         if errors:
@@ -193,3 +258,95 @@ class CS121Coordinator(DataUpdateCoordinator[dict]):
                 len(errors), len(self._polled_oid_groups), "; ".join(errors), len(results),
             )
         return results
+
+    # --- Modbus transport -------------------------------------------------
+
+    async def _ensure_modbus_client(self):
+        if self._modbus_client is None:
+            # Imported lazily so SNMP-only installs never need pymodbus loaded.
+            from pymodbus.client import AsyncModbusTcpClient
+
+            self._modbus_client = AsyncModbusTcpClient(self._host, port=self._port)
+        if not self._modbus_client.connected:
+            await self._modbus_client.connect()
+        return self._modbus_client
+
+    async def _read_modbus_block(self, start: int, count: int) -> dict[int, int] | None:
+        """Read `count` input registers from `start` with retries (the CS121's
+        Modbus link drops the odd request just like its SNMP agent). Returns a
+        {register: value} map, or None if every attempt failed."""
+        client = await self._ensure_modbus_client()
+        last_err: Exception | None = None
+        for attempt in range(1, SNMP_OUTER_ATTEMPTS + 1):
+            try:
+                rr = await asyncio.wait_for(
+                    client.read_input_registers(start, count=count, slave=self._modbus_unit),
+                    timeout=SNMP_PER_ATTEMPT_TIMEOUT,
+                )
+                if not rr.isError():
+                    return {start + i: v for i, v in enumerate(rr.registers)}
+                last_err = Exception(str(rr))
+            except (asyncio.TimeoutError, OSError, Exception) as err:  # noqa: BLE001
+                last_err = err
+            if attempt < SNMP_OUTER_ATTEMPTS:
+                await asyncio.sleep(SNMP_OUTER_RETRY_DELAY)
+        _LOGGER.debug(
+            "Modbus read @%d+%d to %s:%s failed: %s",
+            start, count, self._host, self._port, last_err,
+        )
+        return None
+
+    async def _async_update_modbus(self) -> dict:
+        """Poll the CS121 over Modbus TCP and project the registers onto the SAME
+        OID keyspace the SNMP path uses, so every entity reads identical values
+        regardless of transport."""
+        regs: dict[int, int] = {}
+        # Three modest blocks (telemetry / alarm flags / output) — kept small
+        # because the device is happier with shorter reads.
+        for start, count in ((100, 15), (115, 25), (140, 6)):
+            block = await self._read_modbus_block(start, count)
+            if block:
+                regs.update(block)
+        if not regs:
+            raise UpdateFailed(f"No Modbus response from {self._host}:{self._port}")
+
+        data: dict[str, object | None] = {}
+
+        # Telemetry -> OID keys, scaled to the SNMP unit convention.
+        for reg, oid, mult, signed in MODBUS_TELEMETRY:
+            raw = regs.get(reg)
+            if raw is None:
+                continue
+            if signed and raw > 0x7FFF:
+                raw -= 0x10000
+            data[oid] = raw * mult
+
+        # Alarm flags -> active well-known-alarm OIDs + human labels, so the
+        # existing alarm binary sensors and 'Active alarms' sensor work as-is.
+        active_oids: list[str] = []
+        labels: list[str] = []
+        for reg, oid in MODBUS_ALARM_REGS.items():
+            if regs.get(reg) == 1:
+                active_oids.append(oid)
+                labels.append(WELL_KNOWN_ALARMS.get(oid, oid))
+        for reg, label in MODBUS_ALARM_EXTRA.items():
+            if regs.get(reg) == 1:
+                labels.append(label)
+        data[KEY_ACTIVE_ALARM_OIDS] = active_oids
+        data[KEY_ACTIVE_ALARM_LABELS] = labels
+        data[OID_ALARMS_PRESENT] = len(labels)
+
+        # Derived enums so battery_status / output_source / on_battery / etc. match.
+        data[OID_BATTERY_STATUS] = 3 if regs.get(MODBUS_REG_BATTERY_LOW) == 1 else 2
+        status = regs.get(MODBUS_REG_STATUS)
+        if status is not None:
+            if status & MODBUS_STATUS_BACKUP:
+                data[OID_OUTPUT_SOURCE] = 5      # on battery
+            elif status & MODBUS_STATUS_BYPASS:
+                data[OID_OUTPUT_SOURCE] = 4      # bypass
+            elif status & MODBUS_STATUS_OUTPUT_ACT:
+                data[OID_OUTPUT_SOURCE] = 3      # normal / online
+            else:
+                data[OID_OUTPUT_SOURCE] = 2      # none
+
+        return data
