@@ -26,7 +26,10 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import (
     BATTERY_STATUS_MAP,
     DOMAIN,
+    KEY_ACTIVE_ALARM_LABELS,
+    OUTPUT_SOURCE_STATUS,
     OID_ALARMS_PRESENT,
+    OID_INPUT_LINE_BADS,
     OID_BATTERY_CURRENT,
     OID_BATTERY_STATUS,
     OID_BATTERY_TEMPERATURE,
@@ -115,9 +118,16 @@ SCALAR_SENSORS: tuple[CS121SensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfFrequency.HERTZ,
         device_class=SensorDeviceClass.FREQUENCY, state_class=SensorStateClass.MEASUREMENT,
     ),
+    # Input quality — cumulative count of "input bad" (out-of-tolerance) events.
+    # The closest always-available signal to the web UI's "Input bad" status.
+    CS121SensorEntityDescription(
+        key="input_line_bads", name="Input bad events", oid=OID_INPUT_LINE_BADS,
+        state_class=SensorStateClass.TOTAL_INCREASING, icon="mdi:flash-alert",
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
     # Alarms
     CS121SensorEntityDescription(
-        key="alarms_present", name="Active alarms", oid=OID_ALARMS_PRESENT,
+        key="alarms_present", name="Active alarm count", oid=OID_ALARMS_PRESENT,
         state_class=SensorStateClass.MEASUREMENT, icon="mdi:alert-circle-outline",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
@@ -210,9 +220,12 @@ async def async_setup_entry(
     for line in range(1, coordinator.lines_output + 1):
         descriptions.extend(_output_phase_descs(line))
 
-    async_add_entities(
+    entities: list[CS121Entity] = [
         CS121Sensor(coordinator, entry.entry_id, desc) for desc in descriptions
-    )
+    ]
+    entities.append(UpsStatusSensor(coordinator, entry.entry_id))
+    entities.append(ActiveAlarmsSensor(coordinator, entry.entry_id))
+    async_add_entities(entities)
 
 
 class CS121Sensor(CS121Entity, SensorEntity):
@@ -245,3 +258,66 @@ class CS121Sensor(CS121Entity, SensorEntity):
             except (TypeError, ValueError):
                 return None
         return raw
+
+
+class UpsStatusSensor(CS121Entity, SensorEntity):
+    """Composed, human-readable UPS status mirroring the CS121 web UI's status
+    line — the operating state from upsOutputSource ('UPS is ON', 'On battery',
+    …) followed by any active RFC 1628 alarms ('Input bad', …) when the device
+    reports them. Reconstructs e.g. 'UPS is ON. Input bad.' from standard OIDs."""
+
+    _attr_name = "UPS status"
+    _attr_icon = "mdi:power-plug"
+
+    def __init__(self, coordinator: CS121Coordinator, entry_id: str) -> None:
+        super().__init__(coordinator, entry_id, "ups_status")
+
+    @property
+    def native_value(self) -> str | None:
+        data = self.coordinator.data or {}
+        raw = data.get(OID_OUTPUT_SOURCE)
+        if raw is None:
+            return None
+        try:
+            base = OUTPUT_SOURCE_STATUS.get(int(raw), "Unknown")
+        except (TypeError, ValueError):
+            return None
+        alarms = data.get(KEY_ACTIVE_ALARM_LABELS) or []
+        if alarms:
+            return f"{base}. " + ", ".join(alarms) + "."
+        return base
+
+    @property
+    def extra_state_attributes(self) -> dict[str, list[str]] | None:
+        alarms = (self.coordinator.data or {}).get(KEY_ACTIVE_ALARM_LABELS)
+        if alarms is None:
+            return None
+        return {"active_alarms": alarms}
+
+
+class ActiveAlarmsSensor(CS121Entity, SensorEntity):
+    """Human-readable summary of the active RFC 1628 alarms, e.g. 'Input bad'.
+
+    Mirrors what the CS121 web UI shows. Reads 'None' when no alarm is active
+    and 'unknown' until the first successful alarm-table walk. The full list is
+    also published as an `active_alarms` attribute for templating/automations."""
+
+    _attr_name = "Active alarms"
+    _attr_icon = "mdi:alert-circle-outline"
+
+    def __init__(self, coordinator: CS121Coordinator, entry_id: str) -> None:
+        super().__init__(coordinator, entry_id, "active_alarms_text")
+
+    @property
+    def native_value(self) -> str | None:
+        labels = (self.coordinator.data or {}).get(KEY_ACTIVE_ALARM_LABELS)
+        if labels is None:
+            return None
+        return ", ".join(labels) if labels else "None"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, list[str]] | None:
+        labels = (self.coordinator.data or {}).get(KEY_ACTIVE_ALARM_LABELS)
+        if labels is None:
+            return None
+        return {"active_alarms": labels}

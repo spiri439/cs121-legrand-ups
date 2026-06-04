@@ -11,7 +11,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
+    ALARM_BINARY_SENSORS,
     DOMAIN,
+    KEY_ACTIVE_ALARM_LABELS,
+    KEY_ACTIVE_ALARM_OIDS,
     OID_ALARMS_PRESENT,
     OID_BATTERY_STATUS,
     OID_OUTPUT_SOURCE,
@@ -24,15 +27,20 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     coordinator: CS121Coordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
-        [
-            OnBatterySensor(coordinator, entry.entry_id),
-            MainsPresentSensor(coordinator, entry.entry_id),
-            BatteryLowSensor(coordinator, entry.entry_id),
-            AlarmsPresentSensor(coordinator, entry.entry_id),
-            ConnectionSensor(coordinator, entry.entry_id),
-        ]
-    )
+    entities: list[BinarySensorEntity] = [
+        OnBatterySensor(coordinator, entry.entry_id),
+        MainsPresentSensor(coordinator, entry.entry_id),
+        BatteryLowSensor(coordinator, entry.entry_id),
+        AlarmsPresentSensor(coordinator, entry.entry_id),
+        ConnectionSensor(coordinator, entry.entry_id),
+    ]
+    # One PROBLEM sensor per well-known RFC 1628 alarm (Input bad, Output
+    # overload, Temperature bad, …), driven entirely by the const table.
+    entities += [
+        AlarmBinarySensor(coordinator, entry.entry_id, oid, key, name)
+        for oid, key, name in ALARM_BINARY_SENSORS
+    ]
+    async_add_entities(entities)
 
 
 def _get(coordinator: CS121Coordinator, oid: str) -> int | None:
@@ -104,6 +112,40 @@ class AlarmsPresentSensor(CS121Entity, BinarySensorEntity):
     def is_on(self) -> bool | None:
         v = _get(self.coordinator, OID_ALARMS_PRESENT)
         return None if v is None else v > 0
+
+    @property
+    def extra_state_attributes(self) -> dict[str, list[str]] | None:
+        """Expose the decoded names of the active alarms (e.g. ['Input bad'])."""
+        labels = (self.coordinator.data or {}).get(KEY_ACTIVE_ALARM_LABELS)
+        if labels is None:
+            return None
+        return {"active_alarms": labels}
+
+
+class AlarmBinarySensor(CS121Entity, BinarySensorEntity):
+    """A single well-known RFC 1628 alarm — `on` while that alarm is active in
+    the UPS's alarm table, the same condition the CS121 web UI shows."""
+
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+    def __init__(
+        self,
+        coordinator: CS121Coordinator,
+        entry_id: str,
+        alarm_oid: str,
+        key: str,
+        name: str,
+    ) -> None:
+        super().__init__(coordinator, entry_id, key)
+        self._alarm_oid = alarm_oid
+        self._attr_name = name
+
+    @property
+    def is_on(self) -> bool | None:
+        oids = (self.coordinator.data or {}).get(KEY_ACTIVE_ALARM_OIDS)
+        if oids is None:  # alarm walk hasn't succeeded yet — state unknown
+            return None
+        return self._alarm_oid in oids
 
 
 class ConnectionSensor(CS121Entity, BinarySensorEntity):
